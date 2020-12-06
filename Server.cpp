@@ -102,11 +102,7 @@ void rdt_send(SendPacket *packet){
     packet->init();
     u_short check_sum = compute_check_sum((u_short*)packet->buff, sizeof(SendPacket::Packet) / 2);
     packet->buff->check_sum = check_sum;
-    show_send_pkt(packet);
-    udp_send((char*)packet->buff, sizeof(SendPacket::Packet));
-}
-
-void rdt_resend(SendPacket *packet){
+//    show_send_pkt(packet);
     udp_send((char*)packet->buff, sizeof(SendPacket::Packet));
 }
 
@@ -114,7 +110,7 @@ bool rdt_receive(RecPacket *packet, u_short flag){
     char message[MTU];
     udp_receive(message, MTU);
     packet->extract_pkt(message);
-    show_rec_pkt(packet);
+//    show_rec_pkt(packet);
     if(compute_check_sum((u_short*)packet->buff, sizeof(RecPacket::Packet) / 2) != 0){
         return false;
     } else if(packet->buff->seq == ACK && packet->buff->flag & flag){
@@ -165,46 +161,79 @@ int main(int argc,char** argv)
         std::cout << "初始化成功，准备接受文件\n";
     }
 
+    int state = 111;
+
     auto *send_packet = new SendPacket;
     auto *rec_packet = new RecPacket;
 
-    while (! rdt_receive(rec_packet, CON)){
-        rdt_send(send_packet);
-    }
-    rdt_send(send_packet);
+    std :: string file_name;
 
     std :: string load_path = "/Users/dyf/Desktop/计算机网络/project/lab3/Reliable_Data_Transfer_Protocol_Based_UDP/download/";
 
-    while (! rdt_receive(rec_packet, BOF)){
-        rdt_send(send_packet);
-    }
-    rec_packet->buff->data[rec_packet->buff->len] = '\0';
-    std :: string file_name = (rec_packet->buff->data);
-    rdt_send(send_packet);
+    std :: ofstream *out_file;
 
-    std :: ofstream out_file(load_path + file_name, std :: ios :: binary | std :: ios :: out);  //以二进制写模式打开文件
-    if (!out_file) {
-        perror("File open error.\n");
-        return -1;
-    }
-
-
-    while (true){
-        while ( !rdt_receive(rec_packet,SYN | DOF)) {
-            rdt_send(send_packet);
+    while (state){
+        switch (state){
+            case 111:
+                while (! rdt_receive(rec_packet, CON)){
+                    rdt_send(send_packet);
+                }
+                rdt_send(send_packet);
+                std :: cout << "连接建立成功" << std :: endl;
+                state = 222;
+                while (! rdt_receive(rec_packet, BOF|FIN)){
+                    rdt_send(send_packet);
+                }
+                if(rec_packet->buff->flag == BOF){
+                    state = 222;
+                } else{
+                    state = 555;
+                }
+                break;
+            case 222:
+                rec_packet->buff->data[rec_packet->buff->len] = '\0';
+                file_name = (rec_packet->buff->data);
+                rdt_send(send_packet);
+                out_file = new std :: ofstream(load_path + file_name, std :: ios :: binary | std :: ios :: out);  //以二进制写模式打开文件
+                if (!*out_file) {
+                    perror("File open error.\n");
+                    return -1;
+                }
+                std :: cout << file_name << "文件正在传输" << std :: endl;
+                state = 333;
+                break;
+            case 333:
+                while (true){
+                    while ( !rdt_receive(rec_packet,SYN | DOF)) {
+                        rdt_send(send_packet);
+                    }
+                    if(rec_packet->buff->flag == DOF){
+                        break;
+                    }
+                    rdt_send(send_packet);
+                    out_file->write(rec_packet->buff->data, rec_packet->buff->len);
+                }
+                rdt_send(send_packet);
+                state = 444;
+                break;
+            case 444:
+                std :: cout << file_name << "文件传输成功" << std :: endl;
+                out_file->close();
+                delete out_file;
+                while (! rdt_receive(rec_packet, BOF|FIN)){
+                    rdt_send(send_packet);
+                }
+                if(rec_packet->buff->flag == BOF){
+                    state = 222;
+                } else{
+                    state = 555;
+                }
+                break;
+            case 555:
+                rdt_send(send_packet);
+                std :: cout << "连接断开成功" << std :: endl;
+                state = 0;
         }
-        if(rec_packet->buff->flag == DOF){
-            break;
-        }
-        rdt_send(send_packet);
-        out_file.write(rec_packet->buff->data, rec_packet->buff->len);
-    }
-    rdt_send(send_packet);
-
-    out_file.close();
-
-    while (!rdt_receive(rec_packet, FIN)){
-        rdt_send(send_packet);
     }
 
     close(server_socket);
