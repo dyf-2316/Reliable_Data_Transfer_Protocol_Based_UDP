@@ -17,6 +17,11 @@
 #define SYN 0X0004
 #define DOF 0X0008
 #define FIN 0X0010
+#define RES 0X0011
+
+#define DEFAULT_PORT 11332
+#define DEFAULT_IP_ADDR "127.0.0.1"
+#define DEFAULT_LOAD_PATH "./download/"
 
 socklen_t ADDR_LEN = sizeof(struct sockaddr_in);
 
@@ -144,21 +149,44 @@ bool rdt_init(char *server_ip, int server_port){
 
 }
 
-
 int main(int argc,char** argv)
 {
-    int server_port = 11332;
-    char *server_ip = "127.0.0.1";
-//    std :: cout << "请输入服务器ip地址: ";
-//    std :: cin >> server_ip;
-//    std :: cout << "请输入服务器对应端口号: ";
-//    std :: cin >> server_port;
+    int server_port ;
+    std :: string server_ip ;
 
-    if(! rdt_init("127.0.0.1", 11332)){
+    std :: cout << "请输入服务器ip地址: ";
+    std :: cin >> server_ip;
+    if(server_ip == "-1"){
+        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
+        server_ip = DEFAULT_IP_ADDR;
+    }
+
+    std :: cout << "请输入服务器对应端口号: ";
+    std :: cin >> server_port;
+    if( server_port == -1){
+        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
+        server_port = DEFAULT_PORT;
+    }
+
+    std :: string file_name;
+
+    std :: string load_path ;
+    std :: cout << "请输入下载路径: ";
+    std :: cin >> load_path;
+    if(load_path == "-1"){
+        if (0 != access("./download", 0))
+        {
+            system("mkdir ./download");
+        }
+        std :: cout << "\t默认下载路径: " << DEFAULT_LOAD_PATH << "\n";
+        load_path = DEFAULT_LOAD_PATH;
+    }
+
+    if(! rdt_init((char*)server_ip.c_str(), server_port)){
         std :: cout << "初始化失败\n"; //
         return 1;
-    } else {
-        std::cout << "初始化成功，准备接受文件\n";
+    }else {
+        std::cout << "服务器初始化成功，正在与客户端建立连接\n";
     }
 
     int state = 111;
@@ -166,28 +194,33 @@ int main(int argc,char** argv)
     auto *send_packet = new SendPacket;
     auto *rec_packet = new RecPacket;
 
-    std :: string file_name;
-
-    std :: string load_path = "/Users/dyf/Desktop/计算机网络/project/lab3/Reliable_Data_Transfer_Protocol_Based_UDP/download/";
-
     std :: ofstream *out_file;
 
     while (state){
         switch (state){
             case 111:
-                while (! rdt_receive(rec_packet, CON)){
+                while (! rdt_receive(rec_packet, CON | RES)){
                     rdt_send(send_packet);
                 }
-                rdt_send(send_packet);
-                std :: cout << "连接建立成功" << std :: endl;
-                state = 222;
-                while (! rdt_receive(rec_packet, BOF|FIN)){
+                if(rec_packet->buff->flag == CON) {
+                    rdt_send(send_packet);
+                    std::cout << "客户端连接建立成功" << std::endl;
+                    state = 222;
+                } else if(rec_packet->buff->flag == RES){
+                    state = 666;
+                    continue;
+                }
+
+                while (! rdt_receive(rec_packet, BOF|FIN|RES)){
                     rdt_send(send_packet);
                 }
                 if(rec_packet->buff->flag == BOF){
                     state = 222;
-                } else{
+                } else if (rec_packet->buff->flag == FIN){
                     state = 555;
+                } else if (rec_packet->buff->flag == RES){
+                    state = 666;
+                    continue;
                 }
                 break;
             case 222:
@@ -204,14 +237,19 @@ int main(int argc,char** argv)
                 break;
             case 333:
                 while (true){
-                    while ( !rdt_receive(rec_packet,SYN | DOF)) {
+                    while ( !rdt_receive(rec_packet,SYN | DOF | RES)) {
                         rdt_send(send_packet);
                     }
                     if(rec_packet->buff->flag == DOF){
                         break;
+                    } else if(rec_packet->buff->flag == RES){
+                        state = 666;
+                        break;
+                    } else if(rec_packet->buff->flag == SYN){
+                        rdt_send(send_packet);
+                        out_file->write(rec_packet->buff->data, rec_packet->buff->len);
                     }
-                    rdt_send(send_packet);
-                    out_file->write(rec_packet->buff->data, rec_packet->buff->len);
+
                 }
                 rdt_send(send_packet);
                 state = 444;
@@ -225,13 +263,19 @@ int main(int argc,char** argv)
                 }
                 if(rec_packet->buff->flag == BOF){
                     state = 222;
-                } else{
+                } else if (rec_packet->buff->flag == FIN){
                     state = 555;
+                } else if (rec_packet->buff->flag == RES){
+                    state = 666;
                 }
                 break;
             case 555:
                 rdt_send(send_packet);
-                std :: cout << "连接断开成功" << std :: endl;
+                std :: cout << "客户端连接断开成功" << std :: endl;
+                state = 0;
+                break;
+            case 666:
+                std :: cout << "客户端强制断开连接" << std :: endl;
                 state = 0;
         }
     }

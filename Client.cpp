@@ -13,6 +13,10 @@
 #define SOCKET int
 #define MTU 2048
 #define MAX_DATA_BYTES MTU - sizeof(u_int) - 3 * sizeof(u_short)
+#define MAX_RN 5
+
+#define DEFAULT_PORT 11332
+#define DEFAULT_IP_ADDR "127.0.0.1"
 
 socklen_t ADDR_LEN = sizeof(struct sockaddr_in);
 
@@ -26,8 +30,11 @@ struct timeval timeout = {3,0};
 #define SYN 0X0004
 #define DOF 0X0008
 #define FIN 0X0010
+#define RES 0X0011
 
 int SEQ = 0;
+
+int RN = 0;
 
 class Timer{
     double _begin;
@@ -134,7 +141,7 @@ void rdt_send(char *data, u_int len, u_short flag, SendPacket *packet){
 }
 
 void rdt_resend(SendPacket *packet){
-    show_send_pkt(packet);
+//    show_send_pkt(packet);
     udp_send((char*)packet->buff, sizeof(SendPacket::Packet));
 }
 
@@ -146,6 +153,10 @@ bool udp_receive(char *message, int size) {
 bool rdt_receive(RecPacket *packet){
     char message[sizeof(RecPacket::Packet)];
     if(udp_receive(message, sizeof(RecPacket::Packet))){
+        RN++;
+        if (RN == MAX_RN){
+            return true;
+        }
         return false;
     }
     packet->extract_pkt(message);
@@ -181,17 +192,26 @@ void set_receive_timeout(){
 int main(int argc,char** argv)
 {
     int server_port = 11332;
-    char *server_ip = "127.0.0.1";
-//    std :: cout << "请输入服务器ip地址: ";
-//    std :: cin >> server_ip;
-//    std :: cout << "请输入服务器对应端口号: ";
-//    std :: cin >> server_port;
+    std :: string server_ip = "127.0.0.1";
+    std :: cout << "请输入服务器ip地址: ";
+    std :: cin >> server_ip;
+    if(server_ip == "-1"){
+        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
+        server_ip = DEFAULT_IP_ADDR;
+    }
 
-    if(! rdt_init("127.0.0.1", 11332)){
+    std :: cout << "请输入服务器对应端口号: ";
+    std :: cin >> server_port;
+    if( server_port == -1){
+        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
+        server_port = DEFAULT_PORT;
+    }
+
+    if(! rdt_init((char*)server_ip.c_str(), server_port)){
         perror("Socket initialize error.\n");
         return 1;
     } else {
-        std::cout << "初始化成功，准备发送文件\n";
+        std::cout << "客户端初始化成功，正在与服务器建立连接\n";
     }
 
     set_receive_timeout();
@@ -217,8 +237,13 @@ int main(int argc,char** argv)
                 while (! rdt_receive(rec_packet)){
                     rdt_resend(send_packet);
                 }
+                if(RN == MAX_RN){
+                    state = 777;
+                    continue ;
+                }
+                RN = 0;
                 state = 222;
-                std :: cout << "连接建立成功" << std :: endl;
+                std :: cout << "服务器连接建立成功" << std :: endl;
                 std :: cout << "请输入文件路径: ";
                 break;
             case 222:
@@ -240,6 +265,11 @@ int main(int argc,char** argv)
                 while (! rdt_receive(rec_packet)) {
                     rdt_resend(send_packet);
                 }
+                if(RN == MAX_RN){
+                    state = 777;
+                    continue ;
+                }
+                RN = 0;
                 std :: cout << file_name << " 传输开始" << std :: endl;
                 state = 444;
                 break;
@@ -251,6 +281,11 @@ int main(int argc,char** argv)
                     while (! rdt_receive(rec_packet)){
                         rdt_resend(send_packet);
                     }
+                    if(RN == MAX_RN){
+                        state = 777;
+                        continue ;
+                    }
+                    RN = 0;
                 }
                 state = 555;
                 timer.end();
@@ -261,6 +296,11 @@ int main(int argc,char** argv)
                 while (! rdt_receive(rec_packet)){
                     rdt_resend(send_packet);
                 }
+                if(RN == MAX_RN){
+                    state = 777;
+                    continue ;
+                }
+                RN = 0;
                 in_file->close();
                 delete in_file;
                 state = 222;
@@ -272,6 +312,11 @@ int main(int argc,char** argv)
                     rdt_resend(send_packet);
                 }
                 std :: cout << "连接断开成功" << std :: endl;
+                state = 0;
+                break;
+            case 777:
+                rdt_send(nullptr, 0, RES, send_packet);
+                std :: cout << "服务器无响应，强制连接断开！" << std :: endl;
                 state = 0;
                 break;
         }
