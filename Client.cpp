@@ -9,21 +9,24 @@
 
 #include <iostream>
 #include <fstream>
+#include <queue>
 
 #define SOCKET int
 #define MTU 2048
-#define MAX_DATA_BYTES MTU - sizeof(u_int) - 3 * sizeof(u_short)
-#define MAX_RN 5
+#define MSS (MTU - sizeof(u_int) - 3 * sizeof(u_short))
+#define MAX_RC 5
+#define RTO 500
 
 #define DEFAULT_PORT 11332
 #define DEFAULT_IP_ADDR "127.0.0.1"
+#define DEFAULT_SEND_WIN 4
 
 socklen_t ADDR_LEN = sizeof(struct sockaddr_in);
 
 SOCKET client_socket;
 sockaddr_in server_addr{};
 
-struct timeval timeout = {3,0};
+struct timeval timeout = {1,0};
 
 #define CON 0X0001
 #define BOF 0X0002
@@ -32,13 +35,13 @@ struct timeval timeout = {3,0};
 #define FIN 0X0010
 #define RES 0X0011
 
-int SEQ = 0;
+u_int SEQ = 0;
 
-int RN = 0;
+u_int base = 0;
+u_int nextseqnum = 0;
 
 class Timer{
     double _begin;
-    double _end;
     double get_time(){
         struct timeval tv;
         gettimeofday(&tv, NULL);
@@ -49,13 +52,11 @@ public:
     void begin(){
         _begin = get_time();
     }
-    void end(){
-        _end = get_time();
+
+    double end(){
+        return get_time() - _begin;
     }
 
-    double show(){
-        return _end - _begin;
-    }
 };
 
 struct SendPacket{
@@ -64,23 +65,28 @@ struct SendPacket{
         u_short check_sum;
         u_short len;
         u_short flag;
-        char data[MAX_DATA_BYTES];
+        char data[MSS];
     } * buff;
 
     SendPacket(){
         buff = new Packet;
     }
 
+    u_int size ;
+
     void init(u_short len, char *data, u_short flag){
         bzero(buff, sizeof(Packet));
+        size = 0;
         buff->seq = SEQ ++;
-        SEQ %= 4;
+        SEQ %= UINT32_MAX;
         buff->check_sum = 0;
         buff->len = len;
         buff->flag = flag;
         if (data) {
-            bcopy(data, buff->data, MAX_DATA_BYTES);
+            bcopy(data, buff->data, buff->len);
         }
+        size += len + MTU - MSS;
+        size = ((size % 2) ? size+1 : size);
     }
 
     void make_pkt(u_short check_sum){
@@ -89,11 +95,13 @@ struct SendPacket{
 
 };
 
+std :: vector<SendPacket> sndpkt;
 
 struct RecPacket{
     struct Packet{
         u_int ack;
         u_short check_sum;
+        u_short window;
     } * buff;
 
     RecPacket(){
@@ -104,23 +112,24 @@ struct RecPacket{
         bzero(buff, sizeof(Packet));
         buff->ack = *((u_int *) &(message[0]));
         buff->check_sum = *((u_short *) &(message[4]));
+        buff->window = *((u_short *) &(message[6]));
     }
 };
 
 void show_send_pkt(SendPacket* packet){
     std::cout << "- Send   seq: " << packet->buff->seq << "  len: " << packet->buff->len ;
-    std::cout << "  checksum: " << packet->buff->check_sum << "  flag: " << packet->buff->flag << std :: endl;
+    std::cout << "  checksum: " << packet->buff->check_sum << "  flag: " << packet->buff->flag << "  size: " << packet->size << std :: endl;
 }
 
 void show_rec_pkt(RecPacket* packet){
-    std::cout << "\t- Rec   ack: " << packet->buff->ack << "  len: " << "  checksum: " << packet->buff->check_sum << std :: endl;
+    std::cout << "\t- Rec   ack: " << packet->buff->ack << "  checksum: " << packet->buff->check_sum << "  window: " << packet->buff->window <<std :: endl;
 }
 
 void udp_send(char *package, int size){
     sendto(client_socket, package, size, 0, (struct sockaddr *)&server_addr, ADDR_LEN);
 }
 
-u_short compute_check_sum(u_short *data, int count){
+u_short compute_check_sum(u_short *data, u_int count){
     u_long sum = 0;
     while (count--){
         sum += *data++;
@@ -134,36 +143,31 @@ u_short compute_check_sum(u_short *data, int count){
 
 void rdt_send(char *data, u_int len, u_short flag, SendPacket *packet){
     packet->init(len, data, flag);
-    u_short check_sum = compute_check_sum((u_short*)packet->buff, sizeof(SendPacket::Packet) / 2);
+    u_short check_sum = compute_check_sum((u_short*)packet->buff, packet->size/2);
     packet->make_pkt(check_sum);
-//    show_send_pkt(packet);
-    udp_send((char*)packet->buff, sizeof(SendPacket::Packet));
+    show_send_pkt(packet);
+    udp_send((char*)packet->buff, packet->size);
 }
 
 void rdt_resend(SendPacket *packet){
-//    show_send_pkt(packet);
-    udp_send((char*)packet->buff, sizeof(SendPacket::Packet));
+    std :: cout << "R";
+    show_send_pkt(packet);
+    udp_send((char*)packet->buff, packet->size);
 }
 
 bool udp_receive(char *message, int size) {
     bzero(message, size);
-    return recvfrom(client_socket, message, size, 0, (struct sockaddr *)&server_addr, &ADDR_LEN) == -1;
+    return recvfrom(client_socket, message, size, 0, (struct sockaddr *)&server_addr, &ADDR_LEN) != -1;
 }
 
 bool rdt_receive(RecPacket *packet){
     char message[sizeof(RecPacket::Packet)];
-    if(udp_receive(message, sizeof(RecPacket::Packet))){
-        RN++;
-        if (RN == MAX_RN){
-            return true;
-        }
+    if(! udp_receive(message, sizeof(RecPacket::Packet))){
         return false;
     }
     packet->extract_pkt(message);
-//    show_rec_pkt(packet);
-    if(compute_check_sum((u_short *)packet->buff, sizeof(RecPacket::Packet) / 2) != 0){
-        return false;
-    } else return packet->buff->ack == SEQ;
+    show_rec_pkt(packet);
+    return compute_check_sum((u_short *) packet->buff, sizeof(RecPacket::Packet) / 2) == 0;
 }
 
 bool rdt_init(char *server_ip, int server_port){
@@ -193,19 +197,19 @@ int main(int argc,char** argv)
 {
     int server_port = 11332;
     std :: string server_ip = "127.0.0.1";
-    std :: cout << "请输入服务器ip地址: ";
-    std :: cin >> server_ip;
-    if(server_ip == "-1"){
-        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
-        server_ip = DEFAULT_IP_ADDR;
-    }
-
-    std :: cout << "请输入服务器对应端口号: ";
-    std :: cin >> server_port;
-    if( server_port == -1){
-        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
-        server_port = DEFAULT_PORT;
-    }
+//    std :: cout << "请输入服务器ip地址: ";
+//    std :: cin >> server_ip;
+//    if(server_ip == "-1"){
+//        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
+//        server_ip = DEFAULT_IP_ADDR;
+//    }
+//
+//    std :: cout << "请输入服务器对应端口号: ";
+//    std :: cin >> server_port;
+//    if( server_port == -1){
+//        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
+//        server_port = DEFAULT_PORT;
+//    }
 
     if(! rdt_init((char*)server_ip.c_str(), server_port)){
         perror("Socket initialize error.\n");
@@ -219,37 +223,59 @@ int main(int argc,char** argv)
     auto *send_packet = new SendPacket;
     auto *rec_packet = new RecPacket;
 
-    int state = 111;
+    int state = 100;
+
+    u_short recv_window = 0;
+    u_short send_window = DEFAULT_SEND_WIN;
+//    std :: cout << "请输入发送端固定窗口大小: ";
+//    std :: cin >> send_window;
+//    if( send_window == -1){
+//        std :: cout << "\t默认端口号为: " << DEFAULT_SEND_WIN << "\n";
+//        send_window = DEFAULT_SEND_WIN;
+//    }
+
 
     std :: string file_path, file_name;
 
-    std :: ifstream *in_file;
+    std :: ifstream *in_file = nullptr;
 
-    Timer timer;
+    Timer Transfer_timer{}, RTO_timer{};
 
-    char data[MAX_DATA_BYTES];
-    int len = MAX_DATA_BYTES;
+    bool is_eof = false;
+
+    char data[MSS];
+    int len = 0;
+
+    int resend_count = 0;
 
     while (state){
         switch (state){
-            case 111:
-                rdt_send(nullptr, 0, CON, send_packet);
+            case 100:
+                rdt_send((char *)std :: to_string(send_window).c_str(), std :: to_string(send_window).size(), CON, send_packet);
+                RTO_timer.begin();
+                nextseqnum ++;
                 while (! rdt_receive(rec_packet)){
-                    rdt_resend(send_packet);
+                    if(RTO_timer.end() > RTO){
+                        resend_count ++;
+                        RTO_timer.begin();
+                        rdt_resend(send_packet);
+                    }
+                    if (resend_count == MAX_RC) break;
                 }
-                if(RN == MAX_RN){
-                    state = 777;
+                if(resend_count == MAX_RC){
+                    state = 700;
                     continue ;
                 }
-                RN = 0;
-                state = 222;
+                base ++;
+                resend_count = 0;
+                state = 200;
                 std :: cout << "服务器连接建立成功" << std :: endl;
                 std :: cout << "请输入文件路径: ";
                 break;
-            case 222:
+            case 200:
                 std :: cin >> file_path;
                 if (file_path == "QUIT"){
-                    state = 666;
+                    state = 600;
                     continue;
                 }
                 in_file = new std :: ifstream(file_path, std :: ios :: binary | std :: ios :: in);  //以二进制读模式打开文件
@@ -258,55 +284,95 @@ int main(int argc,char** argv)
                     continue;
                 }
                 file_name = file_path.substr(file_path.rfind('/')+1);
-                state = 333;
+                state = 300;
                 break;
-            case 333:
+            case 300:
                 rdt_send((char*)file_name.c_str(), file_name.length(), BOF, send_packet);
+                RTO_timer.begin();
+                nextseqnum ++;
                 while (! rdt_receive(rec_packet)) {
-                    rdt_resend(send_packet);
+                    if(RTO_timer.end() > RTO){
+                        resend_count ++;
+                        rdt_resend(send_packet);
+                        RTO_timer.begin();
+                    }
+                    if (resend_count == MAX_RC) break;
                 }
-                if(RN == MAX_RN){
-                    state = 777;
+                if(resend_count == MAX_RC){
+                    state = 700;
                     continue ;
                 }
-                RN = 0;
+                resend_count = 0;
+                base ++;
+                recv_window = rec_packet->buff->window;
                 std :: cout << file_name << " 传输开始" << std :: endl;
-                state = 444;
+                Transfer_timer.begin();
+                state = 400;
                 break;
-            case 444:
-                timer.begin();
-                while (! in_file->eof()){
-                    in_file->read(data, MAX_DATA_BYTES);
-                    rdt_send(data, in_file->gcount(), SYN, send_packet);
-                    while (! rdt_receive(rec_packet)){
-                        rdt_resend(send_packet);
+            case 400:
+                is_eof = in_file->eof();
+                if((! is_eof && (nextseqnum < base + send_window)) && (recv_window > 0)) {
+                    len = std :: min((int)MSS, (int)recv_window);
+                    in_file->read(data, len);
+                    len = in_file->gcount();
+                    recv_window -= len;
+                    rdt_send(data, len, SYN, send_packet);
+                    if(base == nextseqnum){
+                        RTO_timer.begin();
                     }
-                    if(RN == MAX_RN){
-                        state = 777;
-                        continue ;
-                    }
-                    RN = 0;
+                    sndpkt.push_back(*send_packet);
+                    nextseqnum ++;
+                }else {
+                    state = 410;
                 }
-                state = 555;
-                timer.end();
                 break;
-            case 555:
-                std :: cout << file_name << " 传输完成, 总计用时" <<timer.show()<< "ms" << std :: endl;
+            case 410:
+                while (! rdt_receive(rec_packet)){
+                    if(RTO_timer.end() > RTO){
+                        resend_count ++;
+                        RTO_timer.begin();
+                        for (auto packet : sndpkt){
+                            rdt_resend(&packet);
+                        }
+                    }
+                }
+                if(resend_count == MAX_RC){
+                    state = 700;
+                    continue ;
+                }
+                resend_count = 0;
+                base = rec_packet->buff->ack;
+                recv_window = rec_packet->buff->window;
+                while ( !sndpkt.empty() && sndpkt.front().buff->seq < base){
+                    sndpkt.erase(sndpkt.begin());
+                }
+                RTO_timer.begin();
+                if(is_eof && sndpkt.empty()){
+                    state = 420;
+                } else if (!is_eof ){
+                    state = 400;
+                }
+                break;
+            case 420:
+                state = 500;
+                break;
+            case 500:
+                std :: cout << file_name << " 传输完成, 总计用时" <<Transfer_timer.end()<< "ms" << std :: endl;
                 rdt_send(nullptr, 0, DOF, send_packet);
                 while (! rdt_receive(rec_packet)){
                     rdt_resend(send_packet);
                 }
-                if(RN == MAX_RN){
-                    state = 777;
+                if(resend_count == MAX_RC){
+                    state = 700;
                     continue ;
                 }
-                RN = 0;
+                resend_count = 0;
                 in_file->close();
                 delete in_file;
-                state = 222;
+                state = 200;
                 std :: cout << "请输入文件路径：";
                 break;
-            case 666:
+            case 600:
                 rdt_send(nullptr, 0, FIN, send_packet);
                 while (! rdt_receive(rec_packet)){
                     rdt_resend(send_packet);
@@ -314,7 +380,7 @@ int main(int argc,char** argv)
                 std :: cout << "连接断开成功" << std :: endl;
                 state = 0;
                 break;
-            case 777:
+            case 700:
                 rdt_send(nullptr, 0, RES, send_packet);
                 std :: cout << "服务器无响应，强制连接断开！" << std :: endl;
                 state = 0;

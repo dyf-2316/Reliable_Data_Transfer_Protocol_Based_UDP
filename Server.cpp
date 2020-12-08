@@ -3,14 +3,15 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <zconf.h>
+#include <sys/time.h>
 
 #include <iostream>
 #include <fstream>
 
 #define SOCKET int
 #define MTU 2048
-#define ACK_SIZE 4
-#define MAX_DATA_BYTES MTU - sizeof(u_int) - 3 * sizeof(u_short)
+#define ACK_SIZE UINT32_MAX
+#define MSS (MTU - sizeof(u_int) - 3 * sizeof(u_short))
 
 #define CON 0X0001
 #define BOF 0X0002
@@ -19,16 +20,40 @@
 #define FIN 0X0010
 #define RES 0X0011
 
+#define MAX_BUF 32768;
 #define DEFAULT_PORT 11332
 #define DEFAULT_IP_ADDR "127.0.0.1"
 #define DEFAULT_LOAD_PATH "./download/"
 
 socklen_t ADDR_LEN = sizeof(struct sockaddr_in);
 
+
 SOCKET server_socket;
 sockaddr_in client_addr{};
 
-int ACK = 0;
+u_int ACK = 0;
+
+struct timeval rec_timeout = {0, 5};
+
+
+class Timer{
+    long _begin;
+    long get_time(){
+        struct timeval tv{};
+        gettimeofday(&tv, nullptr);
+        return tv.tv_sec * 1000000 + tv.tv_usec ;
+    }
+public:
+
+    void begin(){
+        _begin = get_time();
+    }
+
+    long end(){
+        return get_time() - _begin;
+    }
+
+};
 
 struct RecPacket{
     struct Packet{
@@ -36,8 +61,10 @@ struct RecPacket{
         u_short check_sum;
         u_short len;
         u_short flag;
-        char data[MAX_DATA_BYTES];
+        char data[MSS];
     } * buff;
+
+    bool timeout_rec{};
 
     RecPacket(){
         buff = new Packet;
@@ -45,11 +72,12 @@ struct RecPacket{
 
     void extract_pkt(char* message) {
         bzero(buff, sizeof(Packet));
+        timeout_rec = false;
         buff->seq = *((u_int *) &(message[0]));
         buff->check_sum = *((u_short *) &(message[4]));
         buff->len = *((u_short *)&(message[6]));
         buff->flag = *((u_short *)&(message[8]));
-        bcopy((char *)&(message[10]), buff->data, MAX_DATA_BYTES);
+        bcopy((char *)&(message[10]), buff->data, buff->len);
     }
 };
 
@@ -57,15 +85,17 @@ struct SendPacket{
     struct Packet{
         u_int ack;
         u_short check_sum;
+        u_short window;
     } * buff;
 
     SendPacket(){
         buff = new Packet;
     }
 
-    void init(){
+    void init(u_short window){
         bzero(buff, sizeof(Packet));
         buff->ack = ACK;
+        buff->window = window;
     }
 
     void make_pkt(u_short check_sum){
@@ -74,12 +104,12 @@ struct SendPacket{
 };
 
 void show_rec_pkt(RecPacket* packet){
-    std::cout << "- Send   seq: " << packet->buff->seq << "  len: " << packet->buff->len ;
+    std::cout << "\t- Rec   seq: " << packet->buff->seq << "  len: " << packet->buff->len ;
     std::cout << "  checksum: " << packet->buff->check_sum << "  flag: " << packet->buff->flag << std :: endl;
 }
 
 void show_send_pkt(SendPacket* packet){
-    std::cout << "\t- Rec   ack: " << packet->buff->ack << "  checksum: " << packet->buff->check_sum << std :: endl;
+    std::cout << "- Send   ack: " << packet->buff->ack << "  checksum: " << packet->buff->check_sum << "  window: " << packet->buff->window << std :: endl;
 }
 
 u_short compute_check_sum(u_short *data, int count){
@@ -94,33 +124,36 @@ u_short compute_check_sum(u_short *data, int count){
     return ~(sum & 0XFFFF);
 }
 
-void udp_receive(char *message, int size){
+bool udp_receive(char *message, int size){
     bzero(message, size);
-    long recv_num = recvfrom(server_socket, message, size, 0, (struct sockaddr *)&client_addr, &ADDR_LEN);
+    return recvfrom(server_socket, message, size, 0, (struct sockaddr *)&client_addr, &ADDR_LEN) != -1;
 }
 
 void udp_send(char *package, int size){
     sendto(server_socket, package, size, 0, (struct sockaddr *)&client_addr, ADDR_LEN);
 }
 
-void rdt_send(SendPacket *packet){
-    packet->init();
+void rdt_send(SendPacket *packet, u_short window){
+    packet->init(window);
     u_short check_sum = compute_check_sum((u_short*)packet->buff, sizeof(SendPacket::Packet) / 2);
-    packet->buff->check_sum = check_sum;
-//    show_send_pkt(packet);
+    packet->make_pkt(check_sum);
+    show_send_pkt(packet);
     udp_send((char*)packet->buff, sizeof(SendPacket::Packet));
 }
 
 bool rdt_receive(RecPacket *packet, u_short flag){
     char message[MTU];
-    udp_receive(message, MTU);
+    if(! udp_receive(message, MTU)){
+        packet->timeout_rec = true;
+        return true;
+    }
     packet->extract_pkt(message);
-//    show_rec_pkt(packet);
+    show_rec_pkt(packet);
     if(compute_check_sum((u_short*)packet->buff, sizeof(RecPacket::Packet) / 2) != 0){
         return false;
     } else if(packet->buff->seq == ACK && packet->buff->flag & flag){
         ACK ++;
-        ACK %= ACK_SIZE;
+        ACK %= UINT32_MAX;
         return true;
     } else return false;
 }
@@ -149,38 +182,46 @@ bool rdt_init(char *server_ip, int server_port){
 
 }
 
+void set_receive_timeout(){
+    setsockopt(server_socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&rec_timeout,sizeof(struct timeval));
+}
+
 int main(int argc,char** argv)
 {
-    int server_port ;
-    std :: string server_ip ;
+    int server_port = DEFAULT_PORT;
+    std :: string server_ip = DEFAULT_IP_ADDR;
 
-    std :: cout << "请输入服务器ip地址: ";
-    std :: cin >> server_ip;
-    if(server_ip == "-1"){
-        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
-        server_ip = DEFAULT_IP_ADDR;
-    }
+//    std :: cout << "请输入服务器ip地址: ";
+//    std :: cin >> server_ip;
+//    if(server_ip == "-1"){
+//        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
+//        server_ip = DEFAULT_IP_ADDR;
+//    }
+//
+//    std :: cout << "请输入服务器对应端口号: ";
+//    std :: cin >> server_port;
+//    if( server_port == -1){
+//        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
+//        server_port = DEFAULT_PORT;
+//    }
 
-    std :: cout << "请输入服务器对应端口号: ";
-    std :: cin >> server_port;
-    if( server_port == -1){
-        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
-        server_port = DEFAULT_PORT;
-    }
+    std :: string file_name ;
 
-    std :: string file_name;
+    std :: string load_path = DEFAULT_LOAD_PATH;
+//    std :: cout << "请输入下载路径: ";
+//    std :: cin >> load_path;
+//    if(load_path == "-1"){
+//        if (0 != access("./download", 0))
+//        {
+//            system("mkdir ./download");
+//        }
+//        std :: cout << "\t默认下载路径: " << DEFAULT_LOAD_PATH << "\n";
+//        load_path = DEFAULT_LOAD_PATH;
+//    }
 
-    std :: string load_path ;
-    std :: cout << "请输入下载路径: ";
-    std :: cin >> load_path;
-    if(load_path == "-1"){
-        if (0 != access("./download", 0))
-        {
-            system("mkdir ./download");
-        }
-        std :: cout << "\t默认下载路径: " << DEFAULT_LOAD_PATH << "\n";
-        load_path = DEFAULT_LOAD_PATH;
-    }
+    u_short max_rec_window = MAX_BUF;
+    u_short rec_window = max_rec_window;
+    char rec_buf[rec_window];
 
     if(! rdt_init((char*)server_ip.c_str(), server_port)){
         std :: cout << "初始化失败\n"; //
@@ -189,92 +230,132 @@ int main(int argc,char** argv)
         std::cout << "服务器初始化成功，正在与客户端建立连接\n";
     }
 
-    int state = 111;
+    int state = 100;
 
+    set_receive_timeout();
     auto *send_packet = new SendPacket;
     auto *rec_packet = new RecPacket;
 
-    std :: ofstream *out_file;
+    Timer Ack_timer{};
+    u_int Ack_delay_time = 0;
+
+    std :: ofstream *out_file = nullptr;
 
     while (state){
         switch (state){
-            case 111:
+            case 100:
                 while (! rdt_receive(rec_packet, CON | RES)){
-                    rdt_send(send_packet);
+                    rdt_send(send_packet, rec_window);
+                }
+                if(rec_packet->timeout_rec){
+                    rec_packet->timeout_rec = false;
+                    break;
                 }
                 if(rec_packet->buff->flag == CON) {
-                    rdt_send(send_packet);
+                    rdt_send(send_packet, rec_window);
+                    rec_packet->buff->data[rec_packet->buff->len] = '\0';
+                    Ack_delay_time = atoi(rec_packet->buff->data) * 10;
+                    std :: cout << Ack_delay_time << "\n";
                     std::cout << "客户端连接建立成功" << std::endl;
-                    state = 222;
+                    state = 110;
                 } else if(rec_packet->buff->flag == RES){
-                    state = 666;
-                    continue;
-                }
-
-                while (! rdt_receive(rec_packet, BOF|FIN|RES)){
-                    rdt_send(send_packet);
-                }
-                if(rec_packet->buff->flag == BOF){
-                    state = 222;
-                } else if (rec_packet->buff->flag == FIN){
-                    state = 555;
-                } else if (rec_packet->buff->flag == RES){
-                    state = 666;
+                    state = 600;
                     continue;
                 }
                 break;
-            case 222:
+            case 110:
+                while (! rdt_receive(rec_packet, BOF|FIN|RES)){
+                    rdt_send(send_packet, rec_window);
+                }
+                if(rec_packet->timeout_rec){
+                    rec_packet->timeout_rec = false;
+                    break;
+                }
+                if(rec_packet->buff->flag == BOF){
+                    state = 200;
+                } else if (rec_packet->buff->flag == FIN){
+                    state = 500;
+                } else if (rec_packet->buff->flag == RES){
+                    state = 600;
+                    continue;
+                }
+                break;
+            case 200:
                 rec_packet->buff->data[rec_packet->buff->len] = '\0';
                 file_name = (rec_packet->buff->data);
-                rdt_send(send_packet);
+                rdt_send(send_packet, rec_window);
                 out_file = new std :: ofstream(load_path + file_name, std :: ios :: binary | std :: ios :: out);  //以二进制写模式打开文件
                 if (!*out_file) {
                     perror("File open error.\n");
                     return -1;
                 }
                 std :: cout << file_name << "文件正在传输" << std :: endl;
-                state = 333;
+                state = 300;
+                Ack_timer.begin();
                 break;
-            case 333:
-                while (true){
-                    while ( !rdt_receive(rec_packet,SYN | DOF | RES)) {
-                        rdt_send(send_packet);
-                    }
-                    if(rec_packet->buff->flag == DOF){
-                        break;
-                    } else if(rec_packet->buff->flag == RES){
-                        state = 666;
-                        break;
-                    } else if(rec_packet->buff->flag == SYN){
-                        rdt_send(send_packet);
-                        out_file->write(rec_packet->buff->data, rec_packet->buff->len);
-                    }
-
+            case 300:
+                while ( !rdt_receive(rec_packet,SYN | DOF | RES)) {
+                    rdt_send(send_packet, rec_window);
                 }
-                rdt_send(send_packet);
-                state = 444;
+                if(rec_packet->timeout_rec){
+                    if(Ack_timer.end() > Ack_delay_time){
+                        rdt_send(send_packet, rec_window);
+                        Ack_timer.begin();
+                    }
+                    rec_packet->timeout_rec = false;
+                    break;
+                }
+                if(rec_packet->buff->flag == DOF){
+                    out_file->write(rec_buf, max_rec_window - rec_window);
+                    bzero(rec_buf, max_rec_window);
+                    rec_window = max_rec_window;
+                    rdt_send(send_packet, rec_window);
+                    state = 400;
+                    break;
+                } else if(rec_packet->buff->flag == RES){
+                    state = 600;
+                    break;
+                } else if(rec_packet->buff->flag == SYN){
+                    if(rec_window - rec_packet->buff->len <= 0){
+                        out_file->write(rec_buf, max_rec_window - rec_window);
+                        bzero(rec_buf, max_rec_window);
+                        rec_window = max_rec_window;
+                        bcopy(rec_packet->buff->data, rec_buf, rec_packet->buff->len);
+                        rec_window -= rec_packet->buff->len;
+                    } else {
+                        bcopy(rec_packet->buff->data, &rec_buf[max_rec_window - rec_window], rec_packet->buff->len);
+                        rec_window -= rec_packet->buff->len;
+                    }
+                    if(Ack_timer.end() > Ack_delay_time){
+                        rdt_send(send_packet, rec_window);
+                        Ack_timer.begin();
+                    }
+                }
                 break;
-            case 444:
+            case 400:
                 std :: cout << file_name << "文件传输成功" << std :: endl;
                 out_file->close();
                 delete out_file;
+                state = 410;
+                break;
+            case 410:
                 while (! rdt_receive(rec_packet, BOF|FIN)){
-                    rdt_send(send_packet);
+                    rdt_send(send_packet, rec_window);
                 }
                 if(rec_packet->buff->flag == BOF){
-                    state = 222;
+                    state = 200;
                 } else if (rec_packet->buff->flag == FIN){
-                    state = 555;
+                    state = 500;
                 } else if (rec_packet->buff->flag == RES){
-                    state = 666;
+                    state = 600;
                 }
                 break;
-            case 555:
-                rdt_send(send_packet);
+            case 500:
+                rdt_send(send_packet, rec_window);
                 std :: cout << "客户端连接断开成功" << std :: endl;
                 state = 0;
                 break;
-            case 666:
+            case 600:
                 std :: cout << "客户端强制断开连接" << std :: endl;
                 state = 0;
         }
