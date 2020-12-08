@@ -255,7 +255,6 @@ int main(int argc,char** argv)
                     rdt_send(send_packet, rec_window);
                     rec_packet->buff->data[rec_packet->buff->len] = '\0';
                     Ack_delay_time = atoi(rec_packet->buff->data) * 10;
-                    std :: cout << Ack_delay_time << "\n";
                     std::cout << "客户端连接建立成功" << std::endl;
                     state = 110;
                 } else if(rec_packet->buff->flag == RES){

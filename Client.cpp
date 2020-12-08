@@ -68,11 +68,23 @@ struct SendPacket{
         char data[MSS];
     } * buff;
 
+    u_int size ;
+
     SendPacket(){
         buff = new Packet;
     }
 
-    u_int size ;
+    SendPacket(SendPacket *packet){
+        buff = new Packet;
+        bzero(buff, sizeof(Packet));
+        buff->len = packet->buff->len;
+        buff->seq = packet->buff->seq;
+        buff->flag = packet->buff->flag;
+        buff->check_sum = packet->buff->check_sum;
+        bcopy(packet->buff->data, this->buff->data, packet->buff->len);
+        size = packet->size;
+    }
+
 
     void init(u_short len, char *data, u_short flag){
         bzero(buff, sizeof(Packet));
@@ -191,25 +203,33 @@ void set_receive_timeout(){
     setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,sizeof(struct timeval));
 }
 
+int get_file_size(const std::string& file_path){
+    std::ifstream in(file_path.c_str());
+    in.seekg(0, std::ios::end);
+    size_t size = in.tellg();
+    in.close();
+    return size; //单位是：byte
+}
+
 
 
 int main(int argc,char** argv)
 {
     int server_port = 11332;
     std :: string server_ip = "127.0.0.1";
-//    std :: cout << "请输入服务器ip地址: ";
-//    std :: cin >> server_ip;
-//    if(server_ip == "-1"){
-//        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
-//        server_ip = DEFAULT_IP_ADDR;
-//    }
-//
-//    std :: cout << "请输入服务器对应端口号: ";
-//    std :: cin >> server_port;
-//    if( server_port == -1){
-//        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
-//        server_port = DEFAULT_PORT;
-//    }
+    std :: cout << "请输入服务器ip地址: ";
+    std :: cin >> server_ip;
+    if(server_ip == "-1"){
+        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
+        server_ip = DEFAULT_IP_ADDR;
+    }
+
+    std :: cout << "请输入服务器对应端口号: ";
+    std :: cin >> server_port;
+    if( server_port == -1){
+        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
+        server_port = DEFAULT_PORT;
+    }
 
     if(! rdt_init((char*)server_ip.c_str(), server_port)){
         perror("Socket initialize error.\n");
@@ -226,13 +246,13 @@ int main(int argc,char** argv)
     int state = 100;
 
     u_short recv_window = 0;
-    u_short send_window = DEFAULT_SEND_WIN;
-//    std :: cout << "请输入发送端固定窗口大小: ";
-//    std :: cin >> send_window;
-//    if( send_window == -1){
-//        std :: cout << "\t默认端口号为: " << DEFAULT_SEND_WIN << "\n";
-//        send_window = DEFAULT_SEND_WIN;
-//    }
+    u_short send_window = 1;
+    std :: cout << "请输入发送端固定窗口大小: ";
+    std :: cin >> send_window;
+    if( send_window == -1){
+        std :: cout << "\t默认端口号为: " << DEFAULT_SEND_WIN << "\n";
+        send_window = DEFAULT_SEND_WIN;
+    }
 
 
     std :: string file_path, file_name;
@@ -247,6 +267,8 @@ int main(int argc,char** argv)
     int len = 0;
 
     int resend_count = 0;
+
+    long end_transfer = 0;
 
     while (state){
         switch (state){
@@ -320,7 +342,7 @@ int main(int argc,char** argv)
                     if(base == nextseqnum){
                         RTO_timer.begin();
                     }
-                    sndpkt.push_back(*send_packet);
+                    sndpkt.push_back(SendPacket(*send_packet));
                     nextseqnum ++;
                 }else {
                     state = 410;
@@ -344,10 +366,12 @@ int main(int argc,char** argv)
                 base = rec_packet->buff->ack;
                 recv_window = rec_packet->buff->window;
                 while ( !sndpkt.empty() && sndpkt.front().buff->seq < base){
+//                    delete &sndpkt.front();
                     sndpkt.erase(sndpkt.begin());
                 }
                 RTO_timer.begin();
                 if(is_eof && sndpkt.empty()){
+                    end_transfer = Transfer_timer.end();
                     state = 420;
                 } else if (!is_eof ){
                     state = 400;
@@ -357,7 +381,8 @@ int main(int argc,char** argv)
                 state = 500;
                 break;
             case 500:
-                std :: cout << file_name << " 传输完成, 总计用时" <<Transfer_timer.end()<< "ms" << std :: endl;
+                std :: cout << file_name << " 传输完成, 总计用时" << end_transfer << "ms" ;
+                std :: cout << ", 吞吐率为"<< get_file_size(file_path) / end_transfer / 1000 << "MB/s"<< std :: endl;
                 rdt_send(nullptr, 0, DOF, send_packet);
                 while (! rdt_receive(rec_packet)){
                     rdt_resend(send_packet);
