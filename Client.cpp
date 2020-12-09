@@ -9,7 +9,7 @@
 
 #include <iostream>
 #include <fstream>
-#include <queue>
+#include <c++/v1/queue>
 
 #define SOCKET int
 #define MTU 2048
@@ -66,43 +66,41 @@ struct SendPacket{
         u_short len;
         u_short flag;
         char data[MSS];
-    } * buff;
+    } buff;
 
     u_int size ;
 
     SendPacket(){
-        buff = new Packet;
     }
 
     SendPacket(SendPacket *packet){
-        buff = new Packet;
-        bzero(buff, sizeof(Packet));
-        buff->len = packet->buff->len;
-        buff->seq = packet->buff->seq;
-        buff->flag = packet->buff->flag;
-        buff->check_sum = packet->buff->check_sum;
-        bcopy(packet->buff->data, this->buff->data, packet->buff->len);
+        bzero(&buff, sizeof(Packet));
+        buff.len = packet->buff.len;
+        buff.seq = packet->buff.seq;
+        buff.flag = packet->buff.flag;
+        buff.check_sum = packet->buff.check_sum;
+        bcopy(packet->buff.data, this->buff.data, packet->buff.len);
         size = packet->size;
     }
 
 
     void init(u_short len, char *data, u_short flag){
-        bzero(buff, sizeof(Packet));
+        bzero(&buff, sizeof(Packet));
         size = 0;
-        buff->seq = SEQ ++;
+        buff.seq = SEQ ++;
         SEQ %= UINT32_MAX;
-        buff->check_sum = 0;
-        buff->len = len;
-        buff->flag = flag;
+        buff.check_sum = 0;
+        buff.len = len;
+        buff.flag = flag;
         if (data) {
-            bcopy(data, buff->data, buff->len);
+            bcopy(data, buff.data, buff.len);
         }
         size += len + MTU - MSS;
         size = ((size % 2) ? size+1 : size);
     }
 
     void make_pkt(u_short check_sum){
-        buff->check_sum = check_sum;
+        buff.check_sum = check_sum;
     }
 
 };
@@ -129,8 +127,8 @@ struct RecPacket{
 };
 
 void show_send_pkt(SendPacket* packet){
-    std::cout << "- Send   seq: " << packet->buff->seq << "  len: " << packet->buff->len ;
-    std::cout << "  checksum: " << packet->buff->check_sum << "  flag: " << packet->buff->flag << "  size: " << packet->size << std :: endl;
+    std::cout << "- Send   seq: " << packet->buff.seq << "  len: " << packet->buff.len ;
+    std::cout << "  checksum: " << packet->buff.check_sum << "  flag: " << packet->buff.flag << "  size: " << packet->size << std :: endl;
 }
 
 void show_rec_pkt(RecPacket* packet){
@@ -155,16 +153,16 @@ u_short compute_check_sum(u_short *data, u_int count){
 
 void rdt_send(char *data, u_int len, u_short flag, SendPacket *packet){
     packet->init(len, data, flag);
-    u_short check_sum = compute_check_sum((u_short*)packet->buff, packet->size/2);
+    u_short check_sum = compute_check_sum((u_short*)&packet->buff, packet->size/2);
     packet->make_pkt(check_sum);
     show_send_pkt(packet);
-    udp_send((char*)packet->buff, packet->size);
+    udp_send((char*)&packet->buff, packet->size);
 }
 
 void rdt_resend(SendPacket *packet){
-    std :: cout << "R";
+    std :: cout << "R ";
     show_send_pkt(packet);
-    udp_send((char*)packet->buff, packet->size);
+    udp_send((char*)&packet->buff, packet->size);
 }
 
 bool udp_receive(char *message, int size) {
@@ -217,14 +215,14 @@ int main(int argc,char** argv)
 {
     int server_port = 11332;
     std :: string server_ip = "127.0.0.1";
-    std :: cout << "请输入服务器ip地址: ";
+    std :: cout << "请输入接收端ip地址: ";
     std :: cin >> server_ip;
     if(server_ip == "-1"){
         std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
         server_ip = DEFAULT_IP_ADDR;
     }
 
-    std :: cout << "请输入服务器对应端口号: ";
+    std :: cout << "请输入接收端对应端口号: ";
     std :: cin >> server_port;
     if( server_port == -1){
         std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
@@ -235,7 +233,7 @@ int main(int argc,char** argv)
         perror("Socket initialize error.\n");
         return 1;
     } else {
-        std::cout << "客户端初始化成功，正在与服务器建立连接\n";
+        std::cout << "发送端初始化成功，正在与接收端建立连接\n";
     }
 
     set_receive_timeout();
@@ -249,10 +247,7 @@ int main(int argc,char** argv)
     u_short send_window = 1;
     std :: cout << "请输入发送端固定窗口大小: ";
     std :: cin >> send_window;
-    if( send_window == -1){
-        std :: cout << "\t默认端口号为: " << DEFAULT_SEND_WIN << "\n";
-        send_window = DEFAULT_SEND_WIN;
-    }
+
 
 
     std :: string file_path, file_name;
@@ -291,13 +286,16 @@ int main(int argc,char** argv)
                 base ++;
                 resend_count = 0;
                 state = 200;
-                std :: cout << "服务器连接建立成功" << std :: endl;
+                std :: cout << "接收端连接建立成功" << std :: endl;
                 std :: cout << "请输入文件路径: ";
                 break;
             case 200:
                 std :: cin >> file_path;
                 if (file_path == "QUIT"){
                     state = 600;
+                    continue;
+                } else if (file_path == "CONFIG") {
+                    state = 210;
                     continue;
                 }
                 in_file = new std :: ifstream(file_path, std :: ios :: binary | std :: ios :: in);  //以二进制读模式打开文件
@@ -307,6 +305,11 @@ int main(int argc,char** argv)
                 }
                 file_name = file_path.substr(file_path.rfind('/')+1);
                 state = 300;
+                break;
+            case 210:
+                std :: cout << "请输入发送端固定窗口大小: ";
+                std :: cin >> send_window;
+                state = 100;
                 break;
             case 300:
                 rdt_send((char*)file_name.c_str(), file_name.length(), BOF, send_packet);
@@ -342,7 +345,7 @@ int main(int argc,char** argv)
                     if(base == nextseqnum){
                         RTO_timer.begin();
                     }
-                    sndpkt.push_back(SendPacket(*send_packet));
+                    sndpkt.emplace_back(*send_packet);
                     nextseqnum ++;
                 }else {
                     state = 410;
@@ -357,6 +360,7 @@ int main(int argc,char** argv)
                             rdt_resend(&packet);
                         }
                     }
+                    if (resend_count == MAX_RC) break;
                 }
                 if(resend_count == MAX_RC){
                     state = 700;
@@ -365,7 +369,7 @@ int main(int argc,char** argv)
                 resend_count = 0;
                 base = rec_packet->buff->ack;
                 recv_window = rec_packet->buff->window;
-                while ( !sndpkt.empty() && sndpkt.front().buff->seq < base){
+                while ( !sndpkt.empty() && sndpkt.front().buff.seq < base){
 //                    delete &sndpkt.front();
                     sndpkt.erase(sndpkt.begin());
                 }
@@ -402,12 +406,12 @@ int main(int argc,char** argv)
                 while (! rdt_receive(rec_packet)){
                     rdt_resend(send_packet);
                 }
-                std :: cout << "连接断开成功" << std :: endl;
+                std :: cout << "接收端连接断开成功" << std :: endl;
                 state = 0;
                 break;
             case 700:
                 rdt_send(nullptr, 0, RES, send_packet);
-                std :: cout << "服务器无响应，强制连接断开！" << std :: endl;
+                std :: cout << "接收端无响应，强制连接断开！" << std :: endl;
                 state = 0;
                 break;
         }
