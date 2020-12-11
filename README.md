@@ -1,2 +1,1 @@
-# Reliable_Data_Transfer_Protocol_Based_UDP 
-version1.0
+# Reliable_Data_Transfer_Protocol_Based_UDP
