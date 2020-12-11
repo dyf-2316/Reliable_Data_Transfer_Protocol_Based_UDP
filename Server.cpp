@@ -6,7 +6,7 @@
 #include <sys/time.h>
 
 #include <iostream>
-#include <c++/v1/fstream>
+#include <fstream>
 
 #define SOCKET int
 #define MTU 2048
@@ -191,43 +191,35 @@ int main(int argc,char** argv)
     int server_port = DEFAULT_PORT;
     std :: string server_ip = DEFAULT_IP_ADDR;
 
-    std :: cout << "请输入服务器ip地址: ";
-    std :: cin >> server_ip;
-    if(server_ip == "-1"){
-        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
-        server_ip = DEFAULT_IP_ADDR;
-    }
-
-    std :: cout << "请输入服务器对应端口号: ";
-    std :: cin >> server_port;
-    if( server_port == -1){
-        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
-        server_port = DEFAULT_PORT;
-    }
+//    std :: cout << "请输入服务器ip地址: ";
+//    std :: cin >> server_ip;
+//    if(server_ip == "-1"){
+//        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
+//        server_ip = DEFAULT_IP_ADDR;
+//    }
+//
+//    std :: cout << "请输入服务器对应端口号: ";
+//    std :: cin >> server_port;
+//    if( server_port == -1){
+//        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
+//        server_port = DEFAULT_PORT;
+//    }
 
     std :: string file_name ;
 
     std :: string load_path = DEFAULT_LOAD_PATH;
+//    std :: cout << "请输入下载路径: ";
+//    std :: cin >> load_path;
+//    if(load_path == "-1"){
+//        if (0 != access("./download", 0))
+//        {
+//            system("mkdir ./download");
+//        }
+//        std :: cout << "\t默认下载路径: " << DEFAULT_LOAD_PATH << "\n";
+//        load_path = DEFAULT_LOAD_PATH;
+//    }
 
-    std :: cout << "请输入下载路径: ";
-    std :: cin >> load_path;
-    if(load_path == "-1"){
-        if (0 != access("./download", 0))
-        {
-            system("mkdir ./download");
-        }
-        std :: cout << "\t默认下载路径: " << DEFAULT_LOAD_PATH << "\n";
-        load_path = DEFAULT_LOAD_PATH;
-    }
-
-    int max_rec_window = MAX_BUF;
-    std :: cout << "请输入接收端窗口大小: ";
-    std :: cin >> max_rec_window;
-    if( max_rec_window == -1){
-        std :: cout << "\t默认发送端窗口为: " << MAX_BUF ;
-        std :: cout << "\n";
-        max_rec_window = MAX_BUF;
-    }
+    u_short max_rec_window = MAX_BUF;
     u_short rec_window = max_rec_window;
     char rec_buf[rec_window];
 
@@ -263,7 +255,7 @@ int main(int argc,char** argv)
                     rdt_send(send_packet, rec_window);
                     rec_packet->buff->data[rec_packet->buff->len] = '\0';
                     Ack_delay_time = atoi(rec_packet->buff->data) * 10;
-                    std::cout << "发送端连接建立成功，发送端窗口大小为 " << atoi(rec_packet->buff->data) << std::endl;
+                    std::cout << "客户端连接建立成功" << std::endl;
                     state = 110;
                 } else if(rec_packet->buff->flag == RES){
                     state = 600;
@@ -271,7 +263,7 @@ int main(int argc,char** argv)
                 }
                 break;
             case 110:
-                while (! rdt_receive(rec_packet, BOF|FIN|RES|CON)){
+                while (! rdt_receive(rec_packet, BOF|FIN|RES)){
                     rdt_send(send_packet, rec_window);
                 }
                 if(rec_packet->timeout_rec){
@@ -285,12 +277,6 @@ int main(int argc,char** argv)
                 } else if (rec_packet->buff->flag == RES){
                     state = 600;
                     continue;
-                } else if(rec_packet->buff->flag == CON) {
-                    rdt_send(send_packet, rec_window);
-                    rec_packet->buff->data[rec_packet->buff->len] = '\0';
-                    Ack_delay_time = atoi(rec_packet->buff->data) * 10;
-                    std::cout << "发送端窗口更改为 " << atoi(rec_packet->buff->data) << std::endl;
-                    state = 110;
                 }
                 break;
             case 200:
@@ -352,7 +338,7 @@ int main(int argc,char** argv)
                 state = 410;
                 break;
             case 410:
-                while (! rdt_receive(rec_packet, BOF|FIN|CON)){
+                while (! rdt_receive(rec_packet, BOF|FIN)){
                     rdt_send(send_packet, rec_window);
                 }
                 if(rec_packet->buff->flag == BOF){
@@ -361,21 +347,15 @@ int main(int argc,char** argv)
                     state = 500;
                 } else if (rec_packet->buff->flag == RES){
                     state = 600;
-                } else if(rec_packet->buff->flag == CON) {
-                    rdt_send(send_packet, rec_window);
-                    rec_packet->buff->data[rec_packet->buff->len] = '\0';
-                    Ack_delay_time = atoi(rec_packet->buff->data) * 10;
-                    std::cout << "发送端窗口更改为 " << atoi(rec_packet->buff->data) << std::endl;
-                    state = 110;
                 }
                 break;
             case 500:
                 rdt_send(send_packet, rec_window);
-                std :: cout << "发送端连接断开成功" << std :: endl;
+                std :: cout << "客户端连接断开成功" << std :: endl;
                 state = 0;
                 break;
             case 600:
-                std :: cout << "发送端强制断开连接" << std :: endl;
+                std :: cout << "客户端强制断开连接" << std :: endl;
                 state = 0;
         }
     }
