@@ -245,11 +245,10 @@ int main(int argc,char** argv)
 
     u_short recv_window = 0;
     u_short send_window = 1;
-    std :: cout << "请输入发送端固定窗口大小: ";
-    std :: cin >> send_window;
 
     int dep_ACK_count = 0;
     u_int dep_ACK = 0;
+    u_int  ACK_count = 0;
 
     std :: string file_path, file_name;
 
@@ -266,7 +265,7 @@ int main(int argc,char** argv)
 
     double end_transfer = 0;
 
-//    int ssthresh = 32;
+    int ssthresh = 32;
 
     while (state){
         switch (state){
@@ -336,6 +335,9 @@ int main(int argc,char** argv)
                 dep_ACK = base;
                 recv_window = rec_packet->buff->window;
                 std :: cout << file_name << " 传输开始" << std :: endl;
+                send_window = 1;
+                ssthresh = 32;
+                ACK_count = 0;
                 Transfer_timer.begin();
                 state = 400;
                 break;
@@ -359,6 +361,10 @@ int main(int argc,char** argv)
             case 410:
                 while (! rdt_receive(rec_packet)){
                     if(RTO_timer.end() > RTO){
+                        ssthresh = (send_window/2)%2 ? send_window / 2 + 1 : send_window / 2;
+                        send_window = 1;
+                        std :: cout << "接收超时，窗口改为" << send_window << "\n";
+                        ACK_count = 0;
                         resend_count ++;
                         RTO_timer.begin();
                         for (auto packet : sndpkt){
@@ -371,18 +377,49 @@ int main(int argc,char** argv)
                     state = 700;
                     continue ;
                 }
+                if(send_window < ssthresh) state = 411;
+                else state = 412;
+                break;
+            case 411:
                 if(rec_packet->buff->ack == dep_ACK){
                     dep_ACK_count++;
                 } else{
                     dep_ACK_count = 0;
+                    send_window = send_window + rec_packet->buff->ack - base;
+                    std :: cout << "接受新的ACK，窗口改为" << send_window << "\n";
                 }
+                state = 420;
+                break;
+            case 412:
+                if(rec_packet->buff->ack == dep_ACK){
+                    dep_ACK_count++;
+                } else{
+                    dep_ACK_count = 0;
+                    ACK_count += rec_packet->buff->ack - base;
+                    if(ACK_count >= send_window){
+                        ACK_count -= send_window;
+                        send_window = send_window + 1;
+                        std :: cout << "接受新的RTT，窗口改为" << send_window << "\n";
+                    }
+                }
+                state = 420;
+                break;
+            case 420:
                 if(dep_ACK_count == 3){
                     for (auto packet : sndpkt){
                         std :: cout << "3";
                         rdt_resend(&packet);
                     }
+                    ssthresh = (send_window/2)%2 ? send_window / 2 + 1 : send_window / 2;
+                    send_window = ssthresh + 3;
+                    std :: cout << "快速重传，窗口改为" << send_window << "\n";
+                    ACK_count = 0;
+                    state = 410;
                     continue;
                 }
+                state = 430;
+                break;
+            case 430:
                 resend_count = 0;
                 base = rec_packet->buff->ack;
                 dep_ACK = base;
@@ -396,6 +433,8 @@ int main(int argc,char** argv)
                     state = 500;
                 } else if (!is_eof ){
                     state = 400;
+                } else{
+                    state = 410;
                 }
                 break;
             case 500:
