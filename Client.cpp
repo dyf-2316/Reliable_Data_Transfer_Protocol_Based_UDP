@@ -15,7 +15,7 @@
 #define MTU 2048
 #define MSS (MTU - sizeof(u_int) - 3 * sizeof(u_short))
 #define MAX_RC 5
-#define RTO 3
+#define RTO 50
 
 #define DEFAULT_PORT 11332
 #define DEFAULT_IP_ADDR "127.0.0.1"
@@ -265,6 +265,8 @@ int main(int argc,char** argv)
     int resend_count = 0;
 
     double end_transfer = 0;
+
+//    int ssthresh = 32;
 
     while (state){
         switch (state){
