@@ -245,7 +245,7 @@ int main(int argc,char** argv)
     auto *rec_packet = new RecPacket;
 
     Timer Ack_timer{};
-    u_int Ack_delay_time = 5;
+    u_int Ack_delay_time = 0;
 
     bool timeout_send = true;
 
@@ -264,6 +264,7 @@ int main(int argc,char** argv)
                 if(rec_packet->buff->flag == CON) {
                     rdt_send(send_packet, rec_window);
                     rec_packet->buff->data[rec_packet->buff->len] = '\0';
+                    Ack_delay_time = atoi(rec_packet->buff->data) * 10;
                     std::cout << "发送端连接建立成功，发送端窗口大小为 " << atoi(rec_packet->buff->data) << std::endl;
                     state = 110;
                 } else if(rec_packet->buff->flag == RES){
@@ -289,6 +290,7 @@ int main(int argc,char** argv)
                 } else if(rec_packet->buff->flag == CON) {
                     rdt_send(send_packet, rec_window);
                     rec_packet->buff->data[rec_packet->buff->len] = '\0';
+                    Ack_delay_time = atoi(rec_packet->buff->data) * 10;
                     std::cout << "发送端窗口更改为 " << atoi(rec_packet->buff->data) << std::endl;
                     state = 110;
                 }
@@ -368,6 +370,7 @@ int main(int argc,char** argv)
                 } else if(rec_packet->buff->flag == CON) {
                     rdt_send(send_packet, rec_window);
                     rec_packet->buff->data[rec_packet->buff->len] = '\0';
+                    Ack_delay_time = atoi(rec_packet->buff->data) * 10;
                     std::cout << "发送端窗口更改为 " << atoi(rec_packet->buff->data) << std::endl;
                     state = 110;
                 }

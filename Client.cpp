@@ -14,7 +14,7 @@
 #define SOCKET int
 #define MTU 2048
 #define MSS (MTU - sizeof(u_int) - 3 * sizeof(u_short))
-#define MAX_RC 5
+#define MAX_RC 20
 #define RTO 50
 
 #define DEFAULT_PORT 11332
@@ -156,6 +156,8 @@ void rdt_send(char *data, u_int len, u_short flag, SendPacket *packet){
     u_short check_sum = compute_check_sum((u_short*)&packet->buff, packet->size/2);
     packet->make_pkt(check_sum);
     show_send_pkt(packet);
+    if(packet->buff.seq == 9)
+        return;
     udp_send((char*)&packet->buff, packet->size);
 }
 
@@ -215,19 +217,19 @@ int main(int argc,char** argv)
 {
     int server_port = DEFAULT_PORT;
     std :: string server_ip = DEFAULT_IP_ADDR;
-//    std :: cout << "请输入接收端ip地址: ";
-//    std :: cin >> server_ip;
-//    if(server_ip == "-1"){
-//        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
-//        server_ip = DEFAULT_IP_ADDR;
-//    }
-//
-//    std :: cout << "请输入接收端对应端口号: ";
-//    std :: cin >> server_port;
-//    if( server_port == -1){
-//        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
-//        server_port = DEFAULT_PORT;
-//    }
+    std :: cout << "请输入接收端ip地址: ";
+    std :: cin >> server_ip;
+    if(server_ip == "-1"){
+        std :: cout << "\t默认端口号为: " << DEFAULT_IP_ADDR << "\n";
+        server_ip = DEFAULT_IP_ADDR;
+    }
+
+    std :: cout << "请输入接收端对应端口号: ";
+    std :: cin >> server_port;
+    if( server_port == -1){
+        std :: cout << "\t默认端口号为: " << DEFAULT_PORT << "\n";
+        server_port = DEFAULT_PORT;
+    }
 
     if(! rdt_init((char*)server_ip.c_str(), server_port)){
         perror("Socket initialize error.\n");
@@ -414,8 +416,6 @@ int main(int argc,char** argv)
                     send_window = ssthresh + 3;
                     std :: cout << "快速重传，窗口改为" << send_window << "\n";
                     ACK_count = 0;
-                    state = 410;
-                    continue;
                 }
                 state = 430;
                 break;
